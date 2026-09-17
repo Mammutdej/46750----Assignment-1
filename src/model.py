@@ -83,45 +83,83 @@ class FlexibleConsumerModel:
 
     # ------------------------------------------------------------------ 2. build
     def build(self) -> "FlexibleConsumerModel":
-        """Declare decision variables, objective and constraints.
-
-        TODO (Question 1): complete this method with the variables, objective and constraints
-        of the problem you formulated in Question 1. Keep the naming pattern below so
-        that ``solve()`` can return the primal and dual values automatically.
-        """
+        """Build the optimization model for Question 1."""
         d, m, T = self.data, self.m, self.T
 
-        # --- Decision variables --------------------------------------------------------
-        # TODO: identify and declare the decision variables of your formulation.
-        # Store every variable family in self.var["<name>"]: solve() then returns its hourly
-        # values automatically as a column of results.hourly.
-        # Pattern for hourly variables (one per hour):
-        #   self.var["<name>"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="<name>")
-        # Pattern for a single (daily) variable:
-        #   self.var["<name>"] = m.addVar(lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="<name>")
-        # Notes:
-        # * gurobipy indexes the names automatically: name="<name>" in addVars(T, ...) creates
-        #   <name>[0], <name>[1], ..., <name>[23] - no need to build per-hour names yourself.
-        # * vtype: the same format takes GRB.BINARY or GRB.INTEGER if you ever need them (the
-        #   problem then becomes a MILP and dual values are no longer defined; solve() skips them).
-        # * lb defaults to 0 in gurobipy: a free variable needs an explicit lb=-GRB.INFINITY, and
-        #   a bound you want a dual for must be an explicit constraint, not lb=/ub= (see the README).
-        # * naming the families "import", "export", "load", "pv" makes the standard plots of
-        #   src/plotting.py work out of the box.
+        # ------------------------------------------------------------------
+        # 1) Decision variables
+        # ------------------------------------------------------------------
+        # Leave bounds free at the variable level so the explicit constraints
+        # below can carry dual information, as the starter project expects.
+        self.var["import"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="import")
+        self.var["export"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="export")
+        self.var["load"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="load")
+        self.var["pv"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="pv")
 
-        # --- Objective ---------------------------------------------------------------
-        # TODO: express the objective function and its direction (GRB.MINIMIZE or GRB.MAXIMIZE):
-        #   m.setObjective(gp.quicksum(<expression in t> for t in T), <direction>)
-        # The input-data attributes (with units) are documented in src/data_loader.py (InputData).
+        p_import = self.var["import"]
+        p_export = self.var["export"]
+        load = self.var["load"]
+        pv = self.var["pv"]
 
-        # --- Constraints -------------------------------------------------------------
-        # TODO: add the constraints of your formulation.
-        # Pattern for hourly constraints (one per hour, duals returned as a 24-vector; names are
-        # indexed automatically, like for the variables):
-        #   self.con["<name>"] = m.addConstrs(
-        #       (<lhs expression> - <rhs expression> <= 0 for t in T), name="<name>")
-        # Pattern for a single constraint (dual returned as a scalar):
-        #   self.con["<name>"] = m.addConstr(<lhs expression> - <rhs expression> <= 0, name="<name>")
+        # ------------------------------------------------------------------
+        # 2) Objective
+        # ------------------------------------------------------------------
+        import_cost = gp.quicksum((d.energy_price[t] + d.import_tariff) * p_import[t] for t in T)
+        export_revenue = gp.quicksum((d.energy_price[t] - d.export_tariff) * p_export[t] for t in T)
+        pv_cost = gp.quicksum(d.pv_marginal_cost * pv[t] for t in T)
+        utility = gp.quicksum(d.consumption_utility * load[t] for t in T)
+
+        m.setObjective(import_cost - export_revenue + pv_cost - utility, GRB.MINIMIZE)
+
+        # ------------------------------------------------------------------
+        # 3) Constraints
+        # ------------------------------------------------------------------
+        self.con["balance"] = m.addConstrs(
+            (p_import[t] + pv[t] == load[t] + p_export[t] for t in T),
+            name="balance",
+        )
+
+        self.con["import"] = m.addConstrs(
+            (p_import[t] >= 0 for t in T),
+            name="import",
+        )
+
+        self.con["export"] = m.addConstrs(
+            (p_export[t] >= 0 for t in T),
+            name="export",
+        )
+
+        self.con["pv"] = m.addConstrs(
+            (pv[t] >= 0 for t in T),
+            name="pv",
+        )
+
+        self.con["pv_limit"] = m.addConstrs(
+            (pv[t] <= d.pv_available[t] for t in T),
+            name="pv_limit",
+        )
+
+        self.con["load_min"] = m.addConstrs(
+            (load[t] >= d.load_min_kWh for t in T),
+            name="load_min",
+        )
+
+        self.con["load_max"] = m.addConstrs(
+            (load[t] <= d.load_max_kWh for t in T),
+            name="load_max",
+        )
+
+        if d.max_import_kW is not None:
+            self.con["import_cap"] = m.addConstrs(
+                (p_import[t] <= d.max_import_kW for t in T),
+                name="import_cap",
+            )
+
+        if d.max_export_kW is not None:
+            self.con["export_cap"] = m.addConstrs(
+                (p_export[t] <= d.max_export_kW for t in T),
+                name="export_cap",
+            )
 
         m.update()
         return self
