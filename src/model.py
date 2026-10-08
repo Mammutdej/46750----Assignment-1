@@ -216,6 +216,59 @@ class FlexibleConsumerModel:
         )
 
 
+
+class AbsDeviationModel(FlexibleConsumerModel):
+    """Question 2(b): linear disutility of the absolute deviation from the reference load."""
+
+    def build(self) -> "AbsDeviationModel":
+        d, m, T = self.data, self.m, self.T
+        if d.reference_load is None or d.linear_disutility is None:
+            raise ValueError("Q2(b) needs data.reference_load and data.linear_disutility.")
+
+        # ---------------- variables
+        self.var["import"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="import")
+        self.var["export"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="export")
+        self.var["load"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="load")
+        self.var["pv"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="pv")
+        self.var["delta_pos"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="delta_pos")
+        self.var["delta_neg"] = m.addVars(T, lb=-GRB.INFINITY, vtype=GRB.CONTINUOUS, name="delta_neg")
+
+        p_import, p_export = self.var["import"], self.var["export"]
+        load, pv = self.var["load"], self.var["pv"]
+        delta_pos, delta_neg = self.var["delta_pos"], self.var["delta_neg"]
+
+        # ---------------- objective (no utility term; disutility instead)
+        import_cost = gp.quicksum((d.energy_price[t] + d.import_tariff) * p_import[t] for t in T)
+        export_revenue = gp.quicksum((d.energy_price[t] - d.export_tariff) * p_export[t] for t in T)
+        pv_cost = gp.quicksum(d.pv_marginal_cost * pv[t] for t in T)
+        disutility = gp.quicksum(d.linear_disutility * (delta_pos[t] + delta_neg[t]) for t in T)
+
+        m.setObjective(import_cost - export_revenue + pv_cost + disutility, GRB.MINIMIZE)
+
+        # ---------------- constraints (same as Q1)
+        self.con["balance"] = m.addConstrs((p_import[t] + pv[t] == load[t] + p_export[t] for t in T), name="balance")
+        self.con["import"] = m.addConstrs((p_import[t] >= 0 for t in T), name="import")
+        self.con["export"] = m.addConstrs((p_export[t] >= 0 for t in T), name="export")
+        self.con["pv"] = m.addConstrs((pv[t] >= 0 for t in T), name="pv")
+        self.con["pv_limit"] = m.addConstrs((pv[t] <= d.pv_available[t] for t in T), name="pv_limit")
+        self.con["load_min"] = m.addConstrs((load[t] >= d.load_min_kWh for t in T), name="load_min")
+        self.con["load_max"] = m.addConstrs((load[t] <= d.load_max_kWh for t in T), name="load_max")
+        if d.max_import_kW is not None:
+            self.con["import_cap"] = m.addConstrs((p_import[t] <= d.max_import_kW for t in T), name="import_cap")
+        if d.max_export_kW is not None:
+            self.con["export_cap"] = m.addConstrs((p_export[t] <= d.max_export_kW for t in T), name="export_cap")
+
+        # ---------------- new in Q2(b): deviation split
+        self.con["deviation_link"] = m.addConstrs(
+            (load[t] - d.reference_load[t] == delta_pos[t] - delta_neg[t] for t in T),
+            name="deviation_link",
+        )
+        self.con["delta_pos_nonneg"] = m.addConstrs((delta_pos[t] >= 0 for t in T), name="delta_pos_nonneg")
+        self.con["delta_neg_nonneg"] = m.addConstrs((delta_neg[t] >= 0 for t in T), name="delta_neg_nonneg")
+
+        m.update()
+        return self
+
 _STATUS = {
     GRB.OPTIMAL: "OPTIMAL", GRB.INFEASIBLE: "INFEASIBLE", GRB.UNBOUNDED: "UNBOUNDED",
     GRB.INF_OR_UNBD: "INF_OR_UNBD", GRB.TIME_LIMIT: "TIME_LIMIT", GRB.SUBOPTIMAL: "SUBOPTIMAL",
