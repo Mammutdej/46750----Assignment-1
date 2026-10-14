@@ -269,6 +269,152 @@ class AbsDeviationModel(FlexibleConsumerModel):
         m.update()
         return self
 
+class QuadraticDeviationModel(FlexibleConsumerModel):
+    """Question 2(c): quadratic disutility around the reference load."""
+
+    def build(self) -> "QuadraticDeviationModel":
+        d, m, T = self.data, self.m, self.T
+
+        if d.reference_load is None or d.quadratic_disutility is None:
+            raise ValueError(
+                "Q2(c) needs data.reference_load "
+                "and data.quadratic_disutility."
+            )
+
+        if d.quadratic_disutility <= 0:
+            raise ValueError(
+                "The quadratic disutility coefficient must be positive."
+            )
+
+        # --------------------------------------------------------------
+        # 1) Decision variables
+        # --------------------------------------------------------------
+        self.var["import"] = m.addVars(
+            T,
+            lb=-GRB.INFINITY,
+            vtype=GRB.CONTINUOUS,
+            name="import",
+        )
+        self.var["export"] = m.addVars(
+            T,
+            lb=-GRB.INFINITY,
+            vtype=GRB.CONTINUOUS,
+            name="export",
+        )
+        self.var["load"] = m.addVars(
+            T,
+            lb=-GRB.INFINITY,
+            vtype=GRB.CONTINUOUS,
+            name="load",
+        )
+        self.var["pv"] = m.addVars(
+            T,
+            lb=-GRB.INFINITY,
+            vtype=GRB.CONTINUOUS,
+            name="pv",
+        )
+
+        p_import = self.var["import"]
+        p_export = self.var["export"]
+        load = self.var["load"]
+        pv = self.var["pv"]
+
+        # --------------------------------------------------------------
+        # 2) Objective function
+        # --------------------------------------------------------------
+        import_cost = gp.quicksum(
+            (d.energy_price[t] + d.import_tariff) * p_import[t]
+            for t in T
+        )
+
+        export_revenue = gp.quicksum(
+            (d.energy_price[t] - d.export_tariff) * p_export[t]
+            for t in T
+        )
+
+        pv_cost = gp.quicksum(
+            d.pv_marginal_cost * pv[t]
+            for t in T
+        )
+
+        quadratic_disutility = gp.quicksum(
+            d.quadratic_disutility
+            * (load[t] - d.reference_load[t])
+            * (load[t] - d.reference_load[t])
+            for t in T
+        )
+
+        m.setObjective(
+            import_cost
+            - export_revenue
+            + pv_cost
+            + quadratic_disutility,
+            GRB.MINIMIZE,
+        )
+
+        # --------------------------------------------------------------
+        # 3) Constraints
+        # --------------------------------------------------------------
+        self.con["balance"] = m.addConstrs(
+            (
+                p_import[t] + pv[t]
+                == load[t] + p_export[t]
+                for t in T
+            ),
+            name="balance",
+        )
+
+        self.con["import"] = m.addConstrs(
+            (p_import[t] >= 0 for t in T),
+            name="import",
+        )
+
+        self.con["export"] = m.addConstrs(
+            (p_export[t] >= 0 for t in T),
+            name="export",
+        )
+
+        self.con["pv"] = m.addConstrs(
+            (pv[t] >= 0 for t in T),
+            name="pv",
+        )
+
+        self.con["pv_limit"] = m.addConstrs(
+            (pv[t] <= d.pv_available[t] for t in T),
+            name="pv_limit",
+        )
+
+        self.con["load_min"] = m.addConstrs(
+            (load[t] >= d.load_min_kWh for t in T),
+            name="load_min",
+        )
+
+        self.con["load_max"] = m.addConstrs(
+            (load[t] <= d.load_max_kWh for t in T),
+            name="load_max",
+        )
+
+        if d.max_import_kW is not None:
+            self.con["import_cap"] = m.addConstrs(
+                (
+                    p_import[t] <= d.max_import_kW
+                    for t in T
+                ),
+                name="import_cap",
+            )
+
+        if d.max_export_kW is not None:
+            self.con["export_cap"] = m.addConstrs(
+                (
+                    p_export[t] <= d.max_export_kW
+                    for t in T
+                ),
+                name="export_cap",
+            )
+
+        m.update()
+        return self
+
 _STATUS = {
     GRB.OPTIMAL: "OPTIMAL", GRB.INFEASIBLE: "INFEASIBLE", GRB.UNBOUNDED: "UNBOUNDED",
     GRB.INF_OR_UNBD: "INF_OR_UNBD", GRB.TIME_LIMIT: "TIME_LIMIT", GRB.SUBOPTIMAL: "SUBOPTIMAL",
