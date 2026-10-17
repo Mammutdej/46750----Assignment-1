@@ -18,8 +18,8 @@ from gurobipy import GRB
 from src.data_loader import load_question
 
 # ---- Settings: leave as None to auto-detect, or type the exact names -------
-CASE = None        # e.g. "Q3"  (name of the Q3 sub-folder in data/)
-EMIN_FIELD = None  # e.g. "min_daily_energy_kWh"  (attribute holding E_min)
+CASE = "Q3"   
+EMIN_FIELD = "min_daily_energy_kWh"
 # ---------------------------------------------------------------------------
 
 ROOT = Path(__file__).resolve().parent
