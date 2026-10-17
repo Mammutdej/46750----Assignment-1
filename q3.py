@@ -100,7 +100,7 @@ def solve_q3(d, c_Q: float, E_min):
     # Gurobi's Pi = d(objective)/d(right-hand side), minimisation problem:
     #   balance Pi  -> lambda_t (marginal value of 1 kWh in hour t), same sign as report
     #   min_energy Pi (>= constraint) -> mu >= 0, extra cost of raising E_min by 1 kWh
-    lam = np.array([balance[t].Pi for t in T])
+    lam = np.array([-balance[t].Pi for t in T])
     mu = min_energy.Pi if min_energy is not None else 0.0
 
     hourly = pd.DataFrame({
