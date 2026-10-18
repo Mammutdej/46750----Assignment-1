@@ -272,16 +272,30 @@ class AbsDeviationModel(FlexibleConsumerModel):
 class QuadraticDeviationModel(FlexibleConsumerModel):
     """Question 2(c): quadratic disutility around the reference load."""
 
+    def __init__(
+        self,
+        data: InputData,
+        name: str = "quadratic_deviation",
+        verbose: bool = False,
+        quadratic_coefficient: float | None = None,
+    ):
+        super().__init__(data, name=name, verbose=verbose)
+        self.quadratic_coefficient = (
+            data.quadratic_disutility
+            if quadratic_coefficient is None
+            else float(quadratic_coefficient)
+        )
+
     def build(self) -> "QuadraticDeviationModel":
         d, m, T = self.data, self.m, self.T
 
-        if d.reference_load is None or d.quadratic_disutility is None:
+        if d.reference_load is None or self.quadratic_coefficient is None:
             raise ValueError(
                 "Q2(c) needs data.reference_load "
                 "and data.quadratic_disutility."
             )
 
-        if d.quadratic_disutility <= 0:
+        if self.quadratic_coefficient <= 0:
             raise ValueError(
                 "The quadratic disutility coefficient must be positive."
             )
@@ -338,7 +352,7 @@ class QuadraticDeviationModel(FlexibleConsumerModel):
         )
 
         quadratic_disutility = gp.quicksum(
-            d.quadratic_disutility
+            self.quadratic_coefficient
             * (load[t] - d.reference_load[t])
             * (load[t] - d.reference_load[t])
             for t in T
@@ -415,6 +429,192 @@ class QuadraticDeviationModel(FlexibleConsumerModel):
         m.update()
         return self
 
+
+class MinimumEnergyQuadraticModel(QuadraticDeviationModel):
+    """Question 3: quadratic disutility with a minimum daily energy requirement."""
+
+    def __init__(
+        self,
+        data: InputData,
+        minimum_daily_energy: float | None,
+        name: str = "minimum_energy_quadratic",
+        verbose: bool = False,
+        quadratic_coefficient: float | None = None,
+    ):
+        super().__init__(
+            data,
+            name=name,
+            verbose=verbose,
+            quadratic_coefficient=quadratic_coefficient,
+        )
+        self.minimum_daily_energy = (
+            None if minimum_daily_energy is None else float(minimum_daily_energy)
+        )
+
+    def build(self) -> "MinimumEnergyQuadraticModel":
+        super().build()
+        if self.minimum_daily_energy is not None:
+            self.con["min_daily_energy"] = self.m.addConstr(
+                self.var["load"].sum() >= self.minimum_daily_energy,
+                name="min_daily_energy",
+            )
+        self.m.update()
+        return self
+
+class BatteryModel(MinimumEnergyQuadraticModel):
+    """Question 3(g): minimum-energy quadratic model with a battery."""
+
+    def build(self) -> "BatteryModel":
+        d, m, T = self.data, self.m, self.T
+
+        # First build the model from Question 3(a).
+        super().build()
+
+        # Check that the selected dataset contains battery data.
+        battery_parameters = [
+            d.battery_capacity_kWh,
+            d.battery_max_charge_kW,
+            d.battery_max_discharge_kW,
+            d.battery_charging_efficiency,
+            d.battery_discharging_efficiency,
+            d.battery_initial_soc_kWh,
+        ]
+
+        if any(value is None for value in battery_parameters):
+            raise ValueError(
+                "BatteryModel requires the Q3_battery dataset."
+            )
+
+        # --------------------------------------------------------------
+        # 1) Remove the old power balance
+        # --------------------------------------------------------------
+        # The balance from Question 3(a) does not include the battery,
+        # so it must be replaced by a new balance constraint.
+        old_balance = self.con.pop("balance")
+        m.remove(list(old_balance.values()))
+        m.update()
+
+        # --------------------------------------------------------------
+        # 2) Add battery decision variables
+        # --------------------------------------------------------------
+        self.var["charge"] = m.addVars(
+            T,
+            lb=-GRB.INFINITY,
+            vtype=GRB.CONTINUOUS,
+            name="charge",
+        )
+
+        self.var["discharge"] = m.addVars(
+            T,
+            lb=-GRB.INFINITY,
+            vtype=GRB.CONTINUOUS,
+            name="discharge",
+        )
+
+        # soc[t] is the state of charge at the end of hour t.
+        self.var["soc"] = m.addVars(
+            T,
+            lb=-GRB.INFINITY,
+            vtype=GRB.CONTINUOUS,
+            name="soc",
+        )
+
+        p_import = self.var["import"]
+        p_export = self.var["export"]
+        load = self.var["load"]
+        pv = self.var["pv"]
+        charge = self.var["charge"]
+        discharge = self.var["discharge"]
+        soc = self.var["soc"]
+
+        # --------------------------------------------------------------
+        # 3) New power balance including the battery
+        # --------------------------------------------------------------
+        self.con["balance"] = m.addConstrs(
+            (
+                p_import[t] + pv[t] + discharge[t]
+                == load[t] + p_export[t] + charge[t]
+                for t in T
+            ),
+            name="balance",
+        )
+
+        # --------------------------------------------------------------
+        # 4) Charging and discharging limits
+        # --------------------------------------------------------------
+        self.con["charge_lower"] = m.addConstrs(
+            (charge[t] >= 0 for t in T),
+            name="charge_lower",
+        )
+
+        self.con["charge_upper"] = m.addConstrs(
+            (
+                charge[t] <= d.battery_max_charge_kW
+                for t in T
+            ),
+            name="charge_upper",
+        )
+
+        self.con["discharge_lower"] = m.addConstrs(
+            (discharge[t] >= 0 for t in T),
+            name="discharge_lower",
+        )
+
+        self.con["discharge_upper"] = m.addConstrs(
+            (
+                discharge[t] <= d.battery_max_discharge_kW
+                for t in T
+            ),
+            name="discharge_upper",
+        )
+
+        # --------------------------------------------------------------
+        # 5) State-of-charge dynamics
+        # --------------------------------------------------------------
+        self.con["soc_dynamics"] = m.addConstrs(
+            (
+                soc[t]
+                == (
+                    d.battery_initial_soc_kWh
+                    if t == 0
+                    else soc[t - 1]
+                )
+                + d.battery_charging_efficiency * charge[t]
+                - discharge[t] / d.battery_discharging_efficiency
+                for t in T
+            ),
+            name="soc_dynamics",
+        )
+
+        # --------------------------------------------------------------
+        # 6) State-of-charge limits
+        # --------------------------------------------------------------
+        self.con["soc_lower"] = m.addConstrs(
+            (soc[t] >= 0 for t in T),
+            name="soc_lower",
+        )
+
+        self.con["soc_upper"] = m.addConstrs(
+            (
+                soc[t] <= d.battery_capacity_kWh
+                for t in T
+            ),
+            name="soc_upper",
+        )
+
+        # --------------------------------------------------------------
+        # 7) End-of-horizon condition
+        # --------------------------------------------------------------
+        # The battery must finish the day with the same energy with
+        # which it started.
+        self.con["terminal_soc"] = m.addConstr(
+            soc[d.n_hours - 1] == d.battery_initial_soc_kWh,
+            name="terminal_soc",
+        )
+
+        m.update()
+        return self
+    
 _STATUS = {
     GRB.OPTIMAL: "OPTIMAL", GRB.INFEASIBLE: "INFEASIBLE", GRB.UNBOUNDED: "UNBOUNDED",
     GRB.INF_OR_UNBD: "INF_OR_UNBD", GRB.TIME_LIMIT: "TIME_LIMIT", GRB.SUBOPTIMAL: "SUBOPTIMAL",
