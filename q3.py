@@ -28,18 +28,22 @@ TOL = 1e-5
 
 
 def find_case():
-    """Pick the Q3 data folder (not the battery one) if CASE is not set."""
+    """Pick the Q3 data case (not the battery one) if CASE is not set."""
     if CASE:
         return CASE
-    folders = sorted(p.name for p in (ROOT / "data").iterdir() if p.is_dir())
-    cands = [f for f in folders if "3" in f and "bat" not in f.lower()]
+    data_dir = ROOT / "data"
+    entries = sorted(
+        {p.name for p in data_dir.iterdir() if p.is_dir()}
+        | {p.stem.removeprefix("params_") for p in data_dir.glob("params_*.json")}
+    )
+    cands = [name for name in entries if "3" in name and "bat" not in name.lower()]
     for name in cands:
         try:
             load_question(name)
             return name
         except Exception:
             continue
-    raise RuntimeError(f"Could not find the Q3 data folder. Folders in data/: {folders}. "
+    raise RuntimeError(f"Could not find the Q3 data case. Entries in data/: {entries}. "
                        "Set CASE at the top of q3_analysis.py.")
 
 
